@@ -4,11 +4,19 @@ import seaborn as sns
 import numpy as np
 import scipy.stats as stats
 import matplotlib.pyplot as plt
+from sklearn import preprocessing 
+from sklearn.preprocessing import OrdinalEncoder
+from sklearn.preprocessing import MinMaxScaler
 
 from pyspark.sql import SparkSession
-from pyspark.ml.feature import MinMaxScaler
+from pyspark.ml.feature import VectorAssembler, VectorSlicer
 from pyspark.ml.linalg import Vectors
 from pyspark.sql.functions import col
+from pyspark.ml import Pipeline
+from pyspark.sql import functions as F
+
+from pyspark.ml.clustering import KMeans
+from pyspark.ml.evaluation import ClusteringEvaluator
 
 # COMMAND ----------
 
@@ -168,10 +176,6 @@ sns.heatmap(df_datamart_client.isnull(), cbar=False)
 
 # COMMAND ----------
 
-df_datamart_client.shape
-
-# COMMAND ----------
-
 # Tratamiento de Datos Atipicos con Z-Score
 features_Zscore = ['CLIENTE_SALARIO_PROMEDIO', 'TOTAL_TRANSACCIONES', 'DEPOSITO'
                    , 'RETIRO', 'SALDO_AVG', 'DEPOSITO_MONTOAVG', 'RETIRO_MONTOAVG']
@@ -187,13 +191,76 @@ df_datamart_client.shape
 
 # COMMAND ----------
 
-df_datamart_client.head()
-
-# COMMAND ----------
-
 # Variables a ser reescaladas con MinMax Encoder
 features_mimmax = ['CLIENTE_SALARIO_PROMEDIO', 'TOTAL_TRANSACCIONES', 'DEPOSITO', 'RETIRO', 'SALDO_AVG', 'DEPOSITO_MONTOAVG', 'RETIRO_MONTOAVG']
 
 objeto_scaler = MinMaxScaler()
 df_datamart_client[features_mimmax] = objeto_scaler.fit_transform(df_datamart_client[features_mimmax])
 df_datamart_client.head()
+
+# COMMAND ----------
+
+# Variables cualitativas nominales a convertirse en Dummies
+features = ['CLIENTE_GENERO', 'CLIENTE_REGION', 'DEUDA_CATEGORIA']
+
+dummies = pd.get_dummies(df_datamart_client[features])
+berka_proccessed = pd.concat([df_datamart_client.drop(features, axis=1), dummies], axis=1)
+berka_proccessed.head()
+
+# COMMAND ----------
+
+berka_proccessed.dtypes
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## A partir de aqui se utilizara spark para el modelo
+# MAGIC
+
+# COMMAND ----------
+
+# Variables cualitativas ordinales a ser procesadas en ordinal encoder
+enc = OrdinalEncoder()
+berka_proccessed[["CLIENTE_EDAD","CUENTA_ANTIGUEDAD", "CLIENTE_RATIO_DESEMPLEO"]] = enc.fit_transform(berka_proccessed[["CLIENTE_EDAD","CUENTA_ANTIGUEDAD", "CLIENTE_RATIO_DESEMPLEO"]])
+berka_proccessed.head()
+
+# COMMAND ----------
+
+spark_datamart = spark.createDataFrame(berka_proccessed)
+display(spark_datamart)
+
+# COMMAND ----------
+
+kmeans = KMeans().setK(5).setSeed(2023)
+model = kmeans.fit(df)
+
+# COMMAND ----------
+
+columns = ['CLIENTE_EDAD','CLIENTE_SALARIO_PROMEDIO','CLIENTE_RATIO_DESEMPLEO','CUENTA_ANTIGUEDAD','TOTAL_TRANSACCIONES','DEPOSITO','RETIRO','SALDO_AVG','DEPOSITO_MONTOAVG','RETIRO_MONTOAVG','TARJETA_CREDITO','CLIENTE_GENERO_FEMENINO','CLIENTE_GENERO_MASCULINO','CLIENTE_REGION_CENTRAL BOHEMIA','CLIENTE_REGION_EAST BOHEMIA','CLIENTE_REGION_NORTH BOHEMIA','CLIENTE_REGION_NORTH MORAVIA','CLIENTE_REGION_PRAGUE','CLIENTE_REGION_SOUTH BOHEMIA','CLIENTE_REGION_SOUTH MORAVIA','CLIENTE_REGION_WEST BOHEMIA','DEUDA_CATEGORIA_A','DEUDA_CATEGORIA_B','DEUDA_CATEGORIA_C','DEUDA_CATEGORIA_D','DEUDA_CATEGORIA_N']
+
+assembler = VectorAssembler(inputCols=columns, outputCol="features")
+df = assembler.transform(spark_datamart)
+
+# COMMAND ----------
+
+train_data, test_data = df.randomSplit([0.7,0.3])
+
+# COMMAND ----------
+
+model = kmeans.fit(train_data)
+
+# COMMAND ----------
+
+predictions = model.transform(test_data)
+
+# COMMAND ----------
+
+predictions_pandas = predictions.sample(fraction=0.5).toPandas()
+
+# COMMAND ----------
+
+predictions.groupBy(F.col('prediction')).count().show()
+
+# COMMAND ----------
+
+
